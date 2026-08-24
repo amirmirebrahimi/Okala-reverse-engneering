@@ -5,7 +5,7 @@ import time
 from typing import Optional, Any
 from datetime import datetime
 from urllib.parse import quote
-from db import init_db, save_account, save_discounts , get_account, extract_and_delete_discounts, get_all_phones
+from db import init_db, save_account, save_discounts , get_account, extract_and_delete_discounts, get_all_phones, set_account_has_address
 from okala_api import OkalaAPI
 import itertools
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1852,22 +1852,50 @@ def find_discounts(api, access_token, customer_id, phone):
         Terminal.detail("Code", discount_code if discount_code else "-")
         Terminal.line()
 
+def find_key_deep(data, keys):
+    """
+    جستجوی بازگشتی در تمام سطوح دیکشنری/لیست
+    برای پیدا کردن اولین کلید از بین keys
+    """
+    if isinstance(data, dict):
+        for key in keys:
+            if key in data and data[key] not in (None, "", [], {}):
+                return data[key]
+        for value in data.values():
+            found = find_key_deep(value, keys)
+            if found not in (None, "", [], {}):
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = find_key_deep(item, keys)
+            if found not in (None, "", [], {}):
+                return found
+    return None
 
-def operaton(phone_number, province_name, operation, proxy_url=None):
+
+def extract_token_info(token_result):
+    if not isinstance(token_result, dict):
+        return None, None, None
+
+    access = find_key_deep(token_result, ["access_token", "accessToken", "token"])
+    refresh = find_key_deep(token_result, ["refresh_token", "refreshToken"])
+    user_info = find_key_deep(token_result, ["UserInfo", "user_info", "user", "profile", "customer"])
+
+    return access, refresh, user_info
+
+
+
+
+def operaton(phone_number, province_name, operation, proxy_url=None, allow_otp=True):
     
     proxy_url = None
     
     Terminal.header("Okala Automation Client")
 
-
-
-
     Terminal.step_counter = 0
 
     phone = normalize_mobile(phone_number)
     province = province_name
-
-
 
     if province == "1":
         province = "اصفهان"
@@ -1879,8 +1907,6 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
         province = "خراسان رضوی"
     if province == "5":
         province = "آذربایجان شرقی"
-
-
 
     if not phone:
         Terminal.error("Mobile number is required.")
@@ -1911,21 +1937,21 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
 
         if not old_refresh_token:
             Terminal.error("No refresh token found for this account.")
-            return
+            return False
 
         refresh_result = api.refresh_token(old_refresh_token)
         debug_json("Refresh token response", refresh_result)
 
         if not isinstance(refresh_result, dict):
             Terminal.error("Invalid refresh response.")
-            return
+            return False
 
         new_access_token = refresh_result.get("access_token")
         new_refresh_token = refresh_result.get("refresh_token") or old_refresh_token
 
         if not new_access_token:
             Terminal.error("Failed to refresh access token.")
-            return
+            return False
 
         save_account(
             phone=phone,
@@ -1942,35 +1968,27 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
         )
 
         Terminal.ok("Token refreshed successfully.")
-        return
+        return True
 
     # =========================
-    # operation == 1 or 2 : OTP flow
+    # operation == 1, 2, 5 : OTP flow
     # =========================
 
-    
-
-#############################################################
     account_data = get_account(phone) or {}
 
     if not account_data:
-        Terminal.error("No saved account found for this phone.")
+        Terminal.warn("No saved account found, proceeding with OTP registration.")
 
     refresh_token_1 = account_data.get("refresh_token")
     access_token_1  = account_data.get("access_token")
-
 
     access_token = None
     refresh_token = None
     user_info = account_data.get("user_info") or None
 
-
     if not refresh_token_1 and not access_token_1:
-
-        RESULT = {"ok" : False}
-
+        RESULT = {"ok": False}
     else:
-
         RESULT = api.login_with_token(
             refresh_token=refresh_token_1,
             access_token=access_token_1,
@@ -1978,13 +1996,15 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
             login_duration="30",
         )
 
-    if RESULT["ok"]:
-
-        access_token=RESULT["access_token"]
-
+    if RESULT.get("ok"):
+        access_token = RESULT.get("access_token")
         refresh_token = RESULT.get("refresh_token") or refresh_token_1
-
+        user_info = account_data.get("user_info")
     else:
+        if not allow_otp:
+            Terminal.error("No valid token and OTP not allowed.")
+            return False
+
         Terminal.blank()
         Terminal.step("Sending OTP...")
 
@@ -2004,7 +2024,6 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
             Terminal.ok("OTP sent successfully.")
             Terminal.step(f"Waiting for OTP (attempt {attempt+1}) - up to 3 minutes...")
 
-            # منتظر کد OTP از ربات با تایم‌اوت ۱۸۰ ثانیه
             otp_code = wait_for_otp(phone, timeout=180)
 
             if otp_code:
@@ -2016,21 +2035,17 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
         if not otp_code:
             Terminal.error("OTP code is required.")
             return False
-        Terminal.ok(f"OTP received: {otp_code}")
+
         Terminal.blank()
         Terminal.step("Verifying OTP and receiving tokens...")
         token_result = api.verify_otp_and_get_tokens(phone, otp_code)
         debug_json("Tokens response", token_result)
-
+        Terminal.detail("Verify OTP response", json.dumps(token_result, ensure_ascii=False))
         if not isinstance(token_result, dict):
             Terminal.error("Invalid token response.")
             return False
 
-        access_token = token_result.get("access_token")
-        refresh_token = token_result.get("refresh_token")
-        user_info = token_result.get("UserInfo")
-
-###############################################################
+        access_token, refresh_token, user_info = extract_token_info(token_result)
 
     if not access_token:
         Terminal.error("Failed to receive access token or refresh token.")
@@ -2050,12 +2065,52 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
     Terminal.ok("Account storage state saved.")
 
     Terminal.blank()
+
+    # =========================
+    # operation == 5 : فقط ثبت‌نام و به‌روزرسانی پروفایل
+    # =========================
+    if operation == "5":
+        Terminal.step("Updating customer profile...")
+        random_name = pick_random_name("Profile_name.txt")
+        if not random_name:
+            Terminal.warn("Profile update skipped because no valid name was found.")
+            return False
+        payload = build_update_customer_payload(random_name)
+        debug_json("Prepared UpdateCustomer payload", payload, sanitize=False)
+        update_result = api.update_customer(access_token, payload)
+        debug_json("UpdateCustomer response", update_result)
+        if is_success_response(update_result):
+            Terminal.ok("Profile updated.")
+
+            # استخراج داده جدید از پاسخ
+            updated_data = update_result.get("data") or {}
+            if isinstance(updated_data, dict):
+                # اگر user_info قبلاً None بود، یک دیکشنری خالی بساز
+                if not isinstance(user_info, dict):
+                    user_info = {}
+                # ادغام داده جدید در user_info
+                user_info.update(updated_data)
+                # ذخیره مجدد با نام جدید
+                save_account(phone, access_token, refresh_token, user_info=user_info)
+                save_account_storage_state(
+                    phone=phone,
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    user_info=user_info,
+                )
+                Terminal.ok("Local user info updated with new name.")
+        else:
+            Terminal.warn("Profile update may have failed.")
+        set_account_has_address(phone, 0)
+        time.sleep(random.uniform(1, 3))
+        return True
+    # ======================    ===
+    # operation == 1 : دریافت کد تخفیف
+    # =========================
     if operation == "1":
         customer_id = extract_customer_id(user_info)
-
-
         if not customer_id:
-            Terminal.error("Customer ID not found in user_info . Run OTP login at least once")
+            Terminal.error("Customer ID not found in user_info. Run OTP login at least once")
             return False
 
         find_discounts(
@@ -2066,6 +2121,9 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
         )
         return True
 
+    # =========================
+    # operation == 2 : تکمیل پروفایل / افزودن آدرس / افزودن به سبد خرید
+    # =========================
     Terminal.step("Updating customer profile...")
     random_name = pick_random_name("Profile_name.txt")
 
@@ -2142,9 +2200,6 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
 
         selected_random_address = pick_random_address_for_province(province, "addresses.json")
 
-
-
-
         if not selected_random_address:
             Terminal.error("No valid random address found for the selected province.")
             return False
@@ -2174,6 +2229,7 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
                 Terminal.detail("Message", add_address_result.get("message"))
                 Terminal.detail("Error", add_address_result.get("error"))
             return False
+
         addresses_result = api.get_customer_addresses(access_token, page_index=1, page_size=10)
         debug_json("Addresses after AddAddress", addresses_result)
 
@@ -2188,7 +2244,7 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
 
         if selected_lat is None or selected_lng is None:
             Terminal.error("Created address does not contain valid coordinates.")
-            return
+            return False
 
         save_account(
             phone=phone,
@@ -2219,13 +2275,12 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
 
     if selected_lat is None or selected_lng is None:
         Terminal.error("Valid coordinates were not found. Store lookup skipped.")
-        return
+        return False
 
     Terminal.blank()
     Terminal.step("Loading available stores...")
     stores_result = api.get_all_stores(access_token, selected_lat, selected_lng)
     
-    #test
     print("VAL : \n", stores_result, "\n ------------------------------------------------------------------------------------------------------")
     print("TYPE : \n", type(stores_result), "\n ------------------------------------------------------------------------------------------------------")
 
@@ -2324,13 +2379,14 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
         cart_results=cart_results,
     )
 
+    # ثبت وضعیت دارای آدرس
+    set_account_has_address(phone, 1)
+
     added_count = 0
     for item in cart_results:
         result = item.get("result", {})
         if isinstance(result, dict) and result.get("ok") and result.get("success", True):
             added_count += 1
-
-
 
     Terminal.blank()
     Terminal.line()
@@ -2344,7 +2400,6 @@ def operaton(phone_number, province_name, operation, proxy_url=None):
     Terminal.line()
     time.sleep(random.uniform(1, 3))
     return True
-    
 
 if __name__ == "__main__":
     Terminal.step("Initializing database...")
@@ -2371,8 +2426,8 @@ if __name__ == "__main__":
         "4-get discounts,"
     ).strip()
 
-    if choose_operation not in ["1", "2", "3", "4"]:
-        print("Invalid entry, pick between 1, 2, 3 or 4 for the operation.")
+    if choose_operation not in ["1", "2", "3", "4", "5"]:
+        print("Invalid entry, pick between 1, 2, 3, 4 or 5 for the operation.")
         exit(0)
 
     if choose_operation == "4":
@@ -2418,6 +2473,3 @@ if __name__ == "__main__":
     Terminal.detail("Failed", fail_count)
     Terminal.line()
     Terminal.ok("All operations completed.")
-
-
-    

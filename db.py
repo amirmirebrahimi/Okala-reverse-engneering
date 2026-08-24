@@ -1,11 +1,19 @@
 import sqlite3
 import json
-from datetime import datetime
 import os
 import shutil
-from contextlib import closing
+from datetime import datetime
 
 DB_NAME = "okala_profiles.db"
+
+DATA_DIR = "data"
+ACCOUNTS_DIR = os.path.join(DATA_DIR, "accounts")
+ACCOUNTS_REGISTRY_PATH = os.path.join(DATA_DIR, "data", "accounts.json")
+DISCOUNTS_DIR = "discounts"
+DISCOUNTS_FILE_PATH = os.path.join(DISCOUNTS_DIR, "discounts.json")
+
+# پوشه‌ی مخصوص فایل‌های خروجی
+EXPORT_DIR = "exported_data"
 
 
 def get_connection():
@@ -50,10 +58,13 @@ def init_db():
     _ensure_column(cur, "accounts", "address_id", "TEXT")
     _ensure_column(cur, "accounts", "store_id", "TEXT")
 
-    # ستون‌های جدید برای ثبت‌کننده
+    # ستون‌های اطلاعات ثبت‌کننده
     _ensure_column(cur, "accounts", "registered_by_id", "INTEGER")
     _ensure_column(cur, "accounts", "registered_by_name", "TEXT")
     _ensure_column(cur, "accounts", "registered_by_username", "TEXT")
+
+    # ستون وضعیت آدرس
+    _ensure_column(cur, "accounts", "has_address", "INTEGER DEFAULT 0")
 
     conn.commit()
     conn.close()
@@ -125,13 +136,20 @@ def save_account(
     conn.close()
 
 
+def set_account_has_address(phone, status: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE accounts SET has_address = ? WHERE phone = ?", (status, phone))
+    conn.commit()
+    conn.close()
+
+
 def save_discounts(phone, discounts):
     if not isinstance(discounts, list):
         return
 
     conn = get_connection()
     cur = conn.cursor()
-
     checked_at = datetime.now().isoformat(timespec="seconds")
 
     for item in discounts:
@@ -144,7 +162,6 @@ def save_discounts(phone, discounts):
             or item.get("discountId")
             or item.get("DiscountId")
         )
-
         code = (
             item.get("code")
             or item.get("Code")
@@ -153,7 +170,6 @@ def save_discounts(phone, discounts):
             or item.get("couponCode")
             or item.get("CouponCode")
         )
-
         name = (
             item.get("name")
             or item.get("Name")
@@ -238,19 +254,25 @@ def get_account(phone):
 def get_all_phones():
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("SELECT phone FROM accounts")
     phones = [row[0] for row in cur.fetchall()]
-
     conn.close()
     return phones
 
+
+def get_phones_without_address():
+    """شماره‌هایی که هنوز آدرس برایشان ثبت نشده است."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT phone FROM accounts WHERE has_address = 0 ORDER BY phone")
+    phones = [row[0] for row in cur.fetchall()]
+    conn.close()
+    return phones
 
 
 def set_account_registered_by(phone, registered_by_id, registered_by_name=None, registered_by_username=None):
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
         UPDATE accounts
         SET registered_by_id = ?,
@@ -258,7 +280,6 @@ def set_account_registered_by(phone, registered_by_id, registered_by_name=None, 
             registered_by_username = ?
         WHERE phone = ?
     """, (registered_by_id, registered_by_name, registered_by_username, phone))
-
     conn.commit()
     conn.close()
 
@@ -266,7 +287,6 @@ def set_account_registered_by(phone, registered_by_id, registered_by_name=None, 
 def get_all_registered_by_info():
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
         SELECT registered_by_id, registered_by_name, registered_by_username, COUNT(*)
         FROM accounts
@@ -274,7 +294,6 @@ def get_all_registered_by_info():
         GROUP BY registered_by_id, registered_by_name, registered_by_username
         ORDER BY registered_by_name
     """)
-
     rows = cur.fetchall()
     conn.close()
 
@@ -290,29 +309,67 @@ def get_all_registered_by_info():
 
 
 def get_phones_by_registered_by(registered_by_id):
-    """دریافت شماره‌هایی که توسط یک ثبت‌کننده خاص ثبت شده‌اند."""
     conn = get_connection()
     cur = conn.cursor()
-
     cur.execute("""
         SELECT phone
         FROM accounts
         WHERE registered_by_id = ?
         ORDER BY phone
     """, (registered_by_id,))
-
     phones = [row[0] for row in cur.fetchall()]
     conn.close()
     return phones
 
 
-def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
-    from datetime import datetime
+def export_accounts_by_phones(phones, prefix="exported_accounts"):
+    """
+    خروجی گرفتن از اکانت‌ها بر اساس شماره‌های داده‌شده.
+    پوشه‌ی خروجی داخل exported_data ساخته می‌شود.
+    """
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    base_folder = os.path.join(EXPORT_DIR, f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    target_accounts_folder = os.path.join(base_folder, "accounts")
+    target_data_inner_folder = os.path.join(base_folder, "data")
 
-    base_folder = f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    target_data_folder = os.path.join(base_folder, "data")
-    target_accounts_folder = os.path.join(target_data_folder, "accounts")
-    target_data_inner_folder = os.path.join(target_data_folder, "data")
+    os.makedirs(target_accounts_folder, exist_ok=True)
+    os.makedirs(target_data_inner_folder, exist_ok=True)
+
+    # خواندن accounts.json اصلی از مسیر صحیح
+    if os.path.exists(ACCOUNTS_REGISTRY_PATH):
+        with open(ACCOUNTS_REGISTRY_PATH, 'r', encoding='utf-8') as f:
+            registry_data = json.load(f)
+    else:
+        registry_data = {}
+
+    new_accounts_data = {}
+
+    for phone in phones:
+        if phone in registry_data:
+            new_accounts_data[phone] = registry_data[phone]
+
+        src_file = os.path.join(ACCOUNTS_DIR, f"{phone}.json")
+        dst_file = os.path.join(target_accounts_folder, f"{phone}.json")
+
+        if os.path.exists(src_file):
+            shutil.copy2(src_file, dst_file)
+        else:
+            print(f"هشدار: فایل {phone}.json یافت نشد.")
+
+    with open(os.path.join(target_data_inner_folder, "accounts.json"), 'w', encoding='utf-8') as f:
+        json.dump(new_accounts_data, f, indent=4, ensure_ascii=False)
+
+    print(f"✅ {len(phones)} شماره استخراج شد.")
+    print(f"📁 خروجی در پوشه '{base_folder}' ذخیره شد.")
+
+    return base_folder
+
+
+def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    base_folder = os.path.join(EXPORT_DIR, f"extract_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    target_accounts_folder = os.path.join(base_folder, "accounts")
+    target_data_inner_folder = os.path.join(base_folder, "data")
 
     os.makedirs(target_accounts_folder, exist_ok=True)
     os.makedirs(target_data_inner_folder, exist_ok=True)
@@ -332,7 +389,7 @@ def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
     if not records:
         print("هیچ کد تخفیفی در دیتابیس یافت نشد.")
         conn.close()
-        return base_folder
+        return base_folder, []
 
     ids_to_delete = [row[0] for row in records]
     phones = [row[1] for row in records]
@@ -348,23 +405,19 @@ def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
         for row in records
     ]
 
-    main_accounts_json_path = os.path.join("data", "accounts.json")
-    main_accounts_dir = os.path.join("data", "accounts")
-
-    if os.path.exists(main_accounts_json_path):
-        with open(main_accounts_json_path, 'r', encoding='utf-8') as f:
-            main_accounts_data = json.load(f)
+    if os.path.exists(ACCOUNTS_REGISTRY_PATH):
+        with open(ACCOUNTS_REGISTRY_PATH, 'r', encoding='utf-8') as f:
+            registry_data = json.load(f)
     else:
-        main_accounts_data = {}
-        print("هشدار: accounts.json یافت نشد.")
+        registry_data = {}
 
     new_accounts_data = {}
 
     for phone in phones:
-        if phone in main_accounts_data:
-            new_accounts_data[phone] = main_accounts_data[phone]
+        if phone in registry_data:
+            new_accounts_data[phone] = registry_data[phone]
 
-        src_file = os.path.join(main_accounts_dir, f"{phone}.json")
+        src_file = os.path.join(ACCOUNTS_DIR, f"{phone}.json")
         dst_file = os.path.join(target_accounts_folder, f"{phone}.json")
 
         if os.path.exists(src_file):
@@ -372,13 +425,8 @@ def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
         else:
             print(f"هشدار: فایل {phone}.json یافت نشد.")
 
-    # ذخیره accounts.json در data/data/accounts.json
     with open(os.path.join(target_data_inner_folder, "accounts.json"), 'w', encoding='utf-8') as f:
         json.dump(new_accounts_data, f, indent=4, ensure_ascii=False)
-
-    # ذخیره extracted_discounts.json
-    with open(os.path.join(base_folder, "extracted_discounts.json"), 'w', encoding='utf-8') as f:
-        json.dump(extracted_discounts, f, indent=4, ensure_ascii=False)
 
     placeholders = ','.join('?' * len(ids_to_delete))
     cursor.execute(f"DELETE FROM discounts WHERE id IN ({placeholders})", ids_to_delete)
@@ -389,4 +437,4 @@ def extract_and_delete_discounts(n, db_path="okala_profiles.db"):
     print(f"✅ {len(records)} رکورد استخراج و حذف شد.")
     print(f"📁 خروجی در پوشه '{base_folder}' ذخیره شد.")
 
-    return base_folder
+    return base_folder, extracted_discounts
