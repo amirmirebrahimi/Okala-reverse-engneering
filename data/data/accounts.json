@@ -1,0 +1,46 @@
+{
+  "09961987366": {
+    "phone": "09961987366",
+    "storage_state_path": "data\\accounts\\09961987366.json",
+    "created_at": "2026-08-25 12:45:24",
+    "last_used": "2026-08-25T14:42:34.939827",
+    "customer_id": "cecfac79-1d42-40a5-682e-08defd0b5d8c",
+    "user_id": 33316735,
+    "phone_from_user": "09961987366",
+    "has_access_token": true,
+    "has_refresh_token": true
+  },
+  "09961987159": {
+    "phone": "09961987159",
+    "storage_state_path": "data\\accounts\\09961987159.json",
+    "created_at": "2026-08-25 12:53:37",
+    "last_used": "2026-08-25T14:42:19.018561",
+    "customer_id": "cf49948f-977f-4283-4814-08defd0babe0",
+    "user_id": 33342398,
+    "phone_from_user": "09961987159",
+    "has_access_token": true,
+    "has_refresh_token": true
+  },
+  "09374247382": {
+    "phone": "09374247382",
+    "storage_state_path": "data\\accounts\\09374247382.json",
+    "created_at": "2026-08-25 13:02:45",
+    "last_used": "2026-08-25T14:38:16.499274",
+    "customer_id": "b98af199-9283-4c45-7107-08defd0b5d8c",
+    "user_id": 33342559,
+    "phone_from_user": "09374247382",
+    "has_access_token": true,
+    "has_refresh_token": true
+  },
+  "09904939865": {
+    "phone": "09904939865",
+    "storage_state_path": "data\\accounts\\09904939865.json",
+    "created_at": "2026-08-25 13:06:36",
+    "last_used": "2026-08-25T13:40:39.897894",
+    "customer_id": "574223b6-f4a0-4c42-ba55-08defd0b52f9",
+    "user_id": 33342631,
+    "phone_from_user": "09904939865",
+    "has_access_token": true,
+    "has_refresh_token": true
+  }
+}

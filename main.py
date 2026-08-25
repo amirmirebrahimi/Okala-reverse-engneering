@@ -52,7 +52,6 @@ BACKUP_DIR = "backups"
 LAST_BACKUP_FILE = os.path.join(BACKUP_DIR, "last_backup.txt")
 
 def get_last_backup_time():
-    """بازگرداندن زمان آخرین بک‌آپ از فایل"""
     try:
         if os.path.exists(LAST_BACKUP_FILE):
             with open(LAST_BACKUP_FILE, "r", encoding="utf-8") as f:
@@ -64,7 +63,6 @@ def get_last_backup_time():
     return None
 
 def set_last_backup_time(dt):
-    """ذخیره زمان آخرین بک‌آپ در فایل"""
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         with open(LAST_BACKUP_FILE, "w", encoding="utf-8") as f:
@@ -73,7 +71,6 @@ def set_last_backup_time(dt):
         logging.warning(f"Error writing last backup time: {e}")
 
 def backup_database():
-    """تهیه نسخه پشتیبان از فایل دیتابیس و ذخیره زمان آن"""
     db_file = "okala_profiles.db"
     if not os.path.exists(db_file):
         return
@@ -88,19 +85,13 @@ def backup_database():
         logging.error(f"❌ خطا در تهیه نسخه پشتیبان: {e}")
 
 def backup_thread():
-    """
-    بررسی دوره‌ای برای بک‌آپ هر ۳ هفته.
-    با هر بار ری‌استارت سرویس، تایمر از ابتدا شروع نمی‌شود،
-    بلکه هر ساعت بررسی می‌کند که آیا ۲۱ روز از آخرین بک‌آپ گذشته است یا خیر.
-    """
     while True:
-        time.sleep(3600)  # هر ۱ ساعت
+        time.sleep(3600)
         last_backup = get_last_backup_time()
         if last_backup is None or (datetime.now() - last_backup) >= timedelta(days=21):
             backup_database()
 
 def cleanup_export(folder, zip_path):
-    """حذف پوشه و فایل ZIP بعد از ارسال"""
     try:
         if folder and os.path.isdir(folder):
             shutil.rmtree(folder, ignore_errors=True)
@@ -121,6 +112,7 @@ user_keyboard = InlineKeyboard(
 
 employer_keyboard = InlineKeyboard(
     [("🛒 افزودن آدرس و سبد خرید (بازه‌ای)", "admin_cart_batch")],
+    [("🛒 افزودن سبد خرید و آدرس بر اساس ثبت‌کننده", "admin_cart_by_registered")],
     [("🔍 جست‌وجوی کد تخفیف (بازه‌ای)", "admin_operation1")],
     [("📦 دریافت شماره‌های تخفیف‌دار", "admin_operation4")],
     [("👥 دریافت شماره بر اساس ثبت‌کننده", "admin_view_by_registered")],
@@ -130,6 +122,7 @@ employer_keyboard = InlineKeyboard(
 
 programmer_keyboard = InlineKeyboard(
     [("🛒 افزودن آدرس و سبد خرید (بازه‌ای)", "admin_cart_batch")],
+    [("🛒 افزودن سبد خرید و آدرس بر اساس ثبت‌کننده", "admin_cart_by_registered")],
     [("🔍 جست‌وجوی کد تخفیف (بازه‌ای)", "admin_operation1")],
     [("📦 دریافت شماره‌های تخفیف‌دار", "admin_operation4")],
     [("👥 دریافت شماره بر اساس ثبت‌کننده", "admin_view_by_registered")],
@@ -243,17 +236,21 @@ def run_single_okala_operation(phone: str, province: str, operation_type: str, a
             allow_otp=allow_otp
         )
         logs = log_capture.getvalue()
+
+        # استخراج پروکسی از لاگ
+        proxy_match = re.search(r"DEBUG selected proxy: (.+)", logs)
+        proxy_info = proxy_match.group(1) if proxy_match else "None"
+
         if result:
-            return {"success": True, "error": None, "logs": logs}
+            return {"success": True, "error": None, "logs": logs, "proxy_info": proxy_info}
         else:
             error = extract_error_from_logs(logs)
-            return {"success": False, "error": error, "logs": logs}
+            return {"success": False, "error": error, "logs": logs, "proxy_info": proxy_info}
     except Exception as e:
         logs = log_capture.getvalue()
-        return {"success": False, "error": str(e), "logs": logs}
+        return {"success": False, "error": str(e), "logs": logs, "proxy_info": "None"}
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
-
 def run_export_operation(phones):
     log_capture = StringIO()
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -280,8 +277,7 @@ async def start_single_operation(message, phone: str, operation_type: str, succe
     future = loop.run_in_executor(None, run_single_okala_operation, phone, province, operation_type, True)
     try:
         result = await future
-        if result.get("logs"):
-            await send_log(f"📋 لاگ‌های عملیات {phone}:\n{result['logs'][-1500:]}")
+        # لاگ‌های طولانی حذف شد
         if result["success"]:
             if operation_type in ("2", "5"):
                 author = message.author
@@ -324,8 +320,7 @@ async def start_batch_okala_operation(message, phones: list, operation_type: str
             loop = asyncio.get_event_loop()
             future = loop.run_in_executor(None, run_single_okala_operation, phone, province, operation_type, allow_otp)
             result = await future
-            if result.get("logs"):
-                await send_log(f"📋 لاگ‌های شماره {phone}:\n{result['logs'][-1000:]}")
+            # لاگ‌های طولانی حذف شد
             if result["success"]:
                 await message.reply(f"✅ شماره {phone} با موفقیت پردازش شد.")
             else:
@@ -339,6 +334,21 @@ async def start_batch_okala_operation(message, phones: list, operation_type: str
     finally:
         batch_state[user_id] = {}
         set_user_processing(user_id, False)
+
+# ------------- تابع کمکی برای ساخت کیبورد ثبت‌کننده‌ها -------------
+async def get_registered_keyboard(user_id):
+    infos = get_all_registered_by_info()
+    if not infos:
+        await bot.send_message(user_id, "ℹ️ هیچ ثبت‌کننده‌ای یافت نشد.")
+        return None
+    rows = []
+    for info in infos:
+        name = info.get("name") or "بدون نام"
+        username = info.get("username")
+        label = name + (f" (@{username})" if username else "") + f" - {info.get('count', 0)} شماره"
+        rows.append([(label, f"select_registered_cart:{info['id']}")])
+    rows.append([("🏠 بازگشت", "menu")])
+    return InlineKeyboard(*rows)
 
 # ------------- هندلر پیام‌ها -------------
 @bot.on_message(private)
@@ -654,11 +664,35 @@ async def handle_callback(callback_query):
         await callback_query.message.reply("🏙 ابتدا شهر موردنظر را انتخاب کنید:", reply_markup=city_keyboard)
         await safe_answer(callback_query, "✅")
 
+    elif data == "admin_cart_by_registered":
+        if is_user_processing(user_id):
+            await safe_answer(callback_query, "⏳ شما در حال انجام عملیات هستید", show_alert=True)
+            return
+        user_states[user_id] = "awaiting_city_for_registered_cart"
+        await callback_query.message.reply("🏙 ابتدا شهر موردنظر را انتخاب کنید:", reply_markup=city_keyboard)
+        await safe_answer(callback_query, "✅")
+
     elif data.startswith("city_"):
         city_code = data.split("_")[1]
         user_selected_province[user_id] = city_code
-        user_states[user_id] = "awaiting_row_range_cart"
-        await callback_query.message.reply("✅ شهر انتخاب شد.\nلطفاً بازه ردیف را وارد کنید (مثال: 1 100):", reply_markup=cancel_keyboard)
+
+        if user_states.get(user_id) == "awaiting_city_for_registered_cart":
+            user_states[user_id] = "awaiting_registered_for_cart"
+            keyboard = await get_registered_keyboard(user_id)
+            if keyboard:
+                await callback_query.message.reply(
+                    "✅ شهر انتخاب شد.\nحالا یک ثبت‌کننده را انتخاب کنید:",
+                    reply_markup=keyboard
+                )
+            else:
+                await callback_query.message.reply("ℹ️ هیچ ثبت‌کننده‌ای یافت نشد.", reply_markup=get_admin_keyboard(user_id))
+                user_states[user_id] = None
+        else:
+            user_states[user_id] = "awaiting_row_range_cart"
+            await callback_query.message.reply(
+                "✅ شهر انتخاب شد.\nلطفاً بازه ردیف را وارد کنید (مثال: 1 100):",
+                reply_markup=cancel_keyboard
+            )
         await safe_answer(callback_query, "✅")
 
     elif data == "admin_operation1":
@@ -712,7 +746,7 @@ async def handle_callback(callback_query):
         await callback_query.message.reply("👥 یک ثبت‌کننده را انتخاب کنید تا شماره‌های او با فرمت ZIP استخراج شوند:", reply_markup=InlineKeyboard(*rows))
         await safe_answer(callback_query, "✅")
 
-    elif data.startswith("select_registered:"):
+    elif data.startswith("select_registered_cart:"):
         if is_user_processing(user_id):
             await safe_answer(callback_query, "⏳ شما در حال انجام عملیات هستید", show_alert=True)
             return
@@ -723,30 +757,38 @@ async def handle_callback(callback_query):
             await safe_answer(callback_query, "✅")
             return
 
-        await callback_query.message.reply(f"🔍 {len(phones)} شماره یافت شد. در حال ساخت فایل ZIP با فرمت مخصوص...")
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, run_export_operation, phones)
-        folder = None
-        zip_path = None
-        try:
-            if result["success"]:
-                folder = result.get("folder")
-                if folder and os.path.isdir(folder):
-                    zip_path = folder + ".zip"
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for root, _, files in os.walk(folder):
-                            for file in files:
-                                full_path = os.path.join(root, file)
-                                arcname = os.path.relpath(full_path, folder)
-                                zf.write(full_path, arcname)
-                    await bot.send_document(callback_query.message.chat.id, document=zip_path)
-                    await callback_query.message.reply("📁 فایل ZIP شماره‌های ثبت‌کننده ارسال شد.")
-                else:
-                    await callback_query.message.reply("❌ خطا در ساخت پوشه خروجی.")
-            else:
-                await callback_query.message.reply(f"❌ خطا: {result.get('error')}")
-        finally:
-            cleanup_export(folder, zip_path)
+        batch_state[user_id] = {"selected_phones": phones}
+        user_states[user_id] = "awaiting_confirm_cart_registered"
+
+        await callback_query.message.reply(
+            f"🔍 {len(phones)} شماره ثبت‌شده توسط این شخص:\n"
+            + "\n".join(phones)
+            + "\n\nآیا مایل به انجام عملیات سبد خرید و آدرس روی این شماره‌ها هستید؟",
+            reply_markup=InlineKeyboard(
+                [("✅ تایید و شروع", "confirm_cart_registered")],
+                [("❌ انصراف", "cancel")],
+                [("🏠 بازگشت", "menu")]
+            )
+        )
+        await safe_answer(callback_query, "✅")
+
+    elif data == "confirm_cart_registered":
+        if is_user_processing(user_id):
+            await safe_answer(callback_query, "⏳ شما در حال انجام عملیات هستید", show_alert=True)
+            return
+        phones = batch_state.get(user_id, {}).get("selected_phones", [])
+        if not phones:
+            await callback_query.message.reply("خطا: لیست شماره‌ها موجود نیست.", reply_markup=get_admin_keyboard(user_id))
+            await safe_answer(callback_query, "✅")
+            return
+
+        province = user_selected_province.get(user_id, "3")
+        user_states[user_id] = None
+        batch_state[user_id] = {}
+        await callback_query.message.reply(f"🚀 شروع پردازش {len(phones)} شماره...")
+        asyncio.create_task(start_batch_okala_operation(
+            callback_query.message, phones, operation_type="2", province=province, allow_otp=False
+        ))
         await safe_answer(callback_query, "✅")
 
     elif data == "cancel":
@@ -770,6 +812,5 @@ async def handle_callback(callback_query):
 
 if __name__ == "__main__":
     init_db()
-    # شروع ترد بک‌آپ‌گیری دوره‌ای؛ اگر سرویس ری‌استارت شود، تایمر از ابتدا شروع نمی‌شود
     threading.Thread(target=backup_thread, daemon=True).start()
     bot.run()

@@ -12,6 +12,35 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import threading
 
+def load_proxies():
+    try:
+        with open("proxies.txt", "r") as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+def is_proxy_working(proxy_url, test_url="https://ipv4.webshare.io/", timeout=5):
+    try:
+        proxies = {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
+        r = requests.get(test_url, proxies=proxies, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+def get_working_proxy():
+    proxies = load_proxies()
+    if not proxies:
+        return None
+
+    # تلاش برای یافتن پروکسی فعال
+    for proxy in proxies:
+        if is_proxy_working(proxy):
+            return proxy
+    return None
+
 otp_events = {}
 otp_values = {}
 
@@ -41,28 +70,6 @@ def set_otp(phone: str, otp: str) -> None:
     event = otp_events.get(phone)
     if event:
         event.set()
-PROXIES = []
-
-
-
-def is_proxy_working(proxy_url, test_url="https://apigateway.okala.com", timeout=(3, 5)):
-    if not proxy_url:
-        return True
-
-    proxies = {
-        "http": proxy_url,
-        "https": proxy_url,
-    }
-
-    try:
-        response = requests.get(
-            test_url,
-            proxies=proxies,
-            timeout=timeout
-        )
-        return True
-    except requests.RequestException:
-        return False
 
 
 DEBUG_LOGS = False
@@ -1888,7 +1895,7 @@ def extract_token_info(token_result):
 
 def operaton(phone_number, province_name, operation, proxy_url=None, allow_otp=True):
     
-    proxy_url = None
+    #proxy_url = None
     
     Terminal.header("Okala Automation Client")
 
@@ -1918,10 +1925,16 @@ def operaton(phone_number, province_name, operation, proxy_url=None, allow_otp=T
 
     Terminal.blank()
     Terminal.step("Initializing application...")
+    proxy_url = get_working_proxy()
+    print(f"DEBUG selected proxy: {proxy_url}")
+    if proxy_url:
+        Terminal.info(f"Using proxy: {proxy_url}")
+    else:
+        Terminal.warn("No working proxy found. Using direct connection.")
     api = OkalaAPI(proxy=proxy_url)
     Terminal.ok("Application initialized.")
 
-    # =========================
+    # ========= ================
     # operation == 3 : refresh token only
     # =========================
     if operation == "3":
@@ -2379,7 +2392,6 @@ def operaton(phone_number, province_name, operation, proxy_url=None, allow_otp=T
         cart_results=cart_results,
     )
 
-    # ثبت وضعیت دارای آدرس
     set_account_has_address(phone, 1)
 
     added_count = 0
